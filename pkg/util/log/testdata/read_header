@@ -1,0 +1,24 @@
+subtest detect_v1_format
+
+log
+I210801 21:05:59.364923 1 util/log/sync_buffer.go:70  [config] binary: CockroachDB CCL v20.1.17 (x86_64-apple-darwin14, built 2021/05/17 16:30:22,
+I210801 21:05:59.364923 1 util/log/sync_buffer.go:70  [config] arguments: [./cockroach start]
+I210609 21:45:59.308670 1 util/log/file_sync_buffer.go:238 ⋮ [config] log format (utf8=✓): crdb-v1
+I210116 21:49:17.073282 14 server/node.go:464 ⋮ 23 started with engine type ‹2›
+----
+crdb-v1
+
+subtest end
+
+subtest detect_v2_format
+
+log
+I210801 21:05:59.364923 1 util/log/sync_buffer.go:70  [config]   binary: CockroachDB CCL v20.1.17 (x86_64-apple-darwin14, built 2021/05/17 16:30:22,
+I210801 21:05:59.364923 1 util/log/sync_buffer.go:70  [config]   arguments: [./cockroach start]
+I210609 21:45:59.308670 1 util/log/file_sync_buffer.go:238 ⋮ [config]   log format (utf8=✓): crdb-v2
+I210116 21:49:17.073282 14 server/node.go:464 ⋮ [-] 23  started with engine type ‹2›
+----
+crdb-v2
+
+subtest end
+
