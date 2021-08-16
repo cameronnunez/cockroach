@@ -13,18 +13,25 @@ package server_test
 import (
 	"context"
 	"io"
+	"math"
+	"regexp"
 	"testing"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/base"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver"
+	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/kvserverbase"
+	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/server"
 	"github.com/cockroachdb/cockroach/pkg/server/serverpb"
 	"github.com/cockroachdb/cockroach/pkg/testutils"
 	"github.com/cockroachdb/cockroach/pkg/testutils/serverutils"
+	"github.com/cockroachdb/cockroach/pkg/testutils/skip"
 	"github.com/cockroachdb/cockroach/pkg/testutils/testcluster"
 	"github.com/cockroachdb/cockroach/pkg/util/grpcutil"
 	"github.com/cockroachdb/cockroach/pkg/util/leaktest"
 	"github.com/cockroachdb/cockroach/pkg/util/log"
+	"github.com/cockroachdb/cockroach/pkg/util/syncutil"
 	"github.com/cockroachdb/errors"
 	"github.com/kr/pretty"
 	"google.golang.org/grpc"
@@ -229,3 +236,122 @@ func getAdminClientForServer(
 		_ = conn.Close() // nolint:grpcconnclose
 	}, nil
 }
+
+// TestVerboseLoggingForSlowDrains checks that a slow drain triggers
+// verbose logging.
+//
+// It achieves this by starting a 2-node cluster, constraining the
+// ranges to remain on the first node, and then attempting to shut
+// down the first node.
+//
+// FIXME: different shortcomings:
+// 1. the current logging for slow drains uses unstructured events.
+//    When an engineer runs the test with TESFLAGS='-vmodule=store=1' the test will see
+//    the logging always, even if the code that is being tested does not work.
+//    (Because of the log.V condition)
+// 2. this test code is creating a constraint on the text of unstructured
+//    logging events. We usually don't do that - the DEV channel is meant
+//    as a "free for all" for engineers without guarantees.
+//
+// Both problems can be solved by using a structured event instead.
+// (To be discussed - will need to ask KV/SRE teams)
+func TestVerboseLoggingForSlowDrains(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+
+	// This test takes up to 20 seconds. Don't run it in short mode.
+	skip.UnderShort(t)
+
+	// Avoid log configs that disable logging output to files.
+	defer log.ScopeWithoutShowLogs(t).Close(t)
+
+	ctx := context.Background()
+
+	t.Logf("starting cluster...")
+
+	var leaseTransferBlocked syncutil.AtomicBool
+
+	preEvalFilter := func(args kvserverbase.FilterArgs) *roachpb.Error {
+		if args.Req.Method() != roachpb.TransferLease {
+			// Not a lease transfer: process as usual.
+			return nil
+		}
+
+		// Lease transfer blocked?
+		if leaseTransferBlocked.Get() {
+			// Yes: fake a failure.
+			return roachpb.NewErrorf("hello!")
+		}
+		// No: let proceed as usual.
+		return nil
+	}
+
+	tc := testcluster.StartTestCluster(t, 3, base.TestClusterArgs{
+		ServerArgsPerNode: map[int]base.TestServerArgs{
+			0: {
+				Knobs: base.TestingKnobs{
+					Store: &kvserver.StoreTestingKnobs{
+						EvalKnobs: kvserverbase.BatchEvalTestingKnobs{
+							TestingEvalFilter: preEvalFilter,
+						},
+					}}}}})
+	defer tc.Stopper().Stop(ctx)
+
+	t.Logf("waiting for up-replication...")
+	if err := tc.WaitForFullReplication(); err != nil {
+		log.Fatalf(ctx, "while waiting for full replication: %v", err)
+	}
+
+	firstServer := tc.Server(0).(*server.TestServer)
+
+	// Temporary test code
+	t.Logf("draining...")
+	leaseTransferBlocked.Set(true)
+
+	// First call always has some work to do.
+	_, _, err := firstServer.Drain(ctx, false /* verbose */)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Second call: no queries any more. All the work remaining is lease
+	// transfers.
+	remaining, _, err := firstServer.Drain(ctx, false /* verbose */)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Logf("checking for absence of event in log files...")
+	// Now check that we find the log entries.
+	entries, err := log.FetchEntriesFromFiles(0, math.MaxInt64, 10000, verboseStoreLogRe,
+		log.WithMarkedSensitiveData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) > 0 {
+		t.Fatal("log entries found to match regexp, when no log entry was expected")
+	}
+
+	// Third call: since the transfers are blocked, we should
+	// see the same value as previously.
+	// Also, now we will see verbose log entries for the stalling drain.
+	remaining2, _, err := firstServer.Drain(ctx, true /* verbose */)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if remaining2 < remaining {
+		t.Fatalf("expected drain to stall; instead found progress %d -> %d", remaining, remaining2)
+	}
+
+	t.Logf("checking for event in log files...")
+	// Now check that we find the log entries.
+	entries, err = log.FetchEntriesFromFiles(0, math.MaxInt64, 10000, verboseStoreLogRe,
+		log.WithMarkedSensitiveData)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("no log entries matching the regexp")
+	}
+}
+
+var verboseStoreLogRe = regexp.MustCompile("failed to transfer lease")
