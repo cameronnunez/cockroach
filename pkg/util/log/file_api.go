@@ -237,7 +237,15 @@ func GetLogReader(filename string) (io.ReadCloser, error) {
 		return nil, errors.Errorf("not a regular file")
 	}
 
-	return os.Open(filename)
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, err
+	}
+
+	lr := &lockedReader{}
+	lr.mu.Mutex = &fs.mu.Mutex
+	lr.mu.wrappedFile = file
+	return lr, nil
 }
 
 // sortablelogpb.FileInfoSlice is required so we can sort logpb.FileInfos.
@@ -347,12 +355,32 @@ func (a sortableEntries) Less(i, j int) bool {
 	return a[i].Time > a[j].Time
 }
 
-type ioReader struct {
-	mu struct {
-		syncutil.Mutex
+var _ io.ReadCloser = (*ioReader)(nil)
 
-		reader io.ReadCloser
+// lockedReader ensures that XXXX is locked every time the Read method
+// is called. This is used to ensure that we do not perform OS-level
+// read operations concurrently with file flushes.
+type lockedReader struct {
+	mu struct {
+		// We use a mutex by reference, so that we can point this
+		// lockedReader to the same mutex as used by the corresponding
+		// fileSink.
+		*syncutil.Mutex
+
+		wrappedFile io.ReadCloser
 	}
+}
+
+func (r *lockedReader) Read(b []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.mu.wrappedFile.Read(b)
+}
+
+func (r *lockedReader) Close() error {
+	// We do not need to hold the mute to call Close() since there is
+	// no flushing needed on read-only file access.
+	return r.mu.wrappedFile.Close()
 }
 
 // readAllEntriesFromFile reads in all log entries from a given file that are
@@ -370,15 +398,11 @@ func readAllEntriesFromFile(
 	editMode EditSensitiveData,
 	format string,
 ) ([]logpb.Entry, bool, error) {
-	var r ioReader
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
-	var err error
-	if r.mu.reader, err = GetLogReader(file.Name); err != nil {
+	reader, err := GetLogReader(file.Name)
+	if err != nil {
 		return nil, false, err
 	}
-	defer r.mu.reader.Close()
+	defer reader.Close()
 
 	entries := []logpb.Entry{}
 	decoder, err := NewEntryDecoderWithFormat(r.mu.reader, editMode, format)
