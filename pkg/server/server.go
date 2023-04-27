@@ -61,6 +61,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/rpc"
 	"github.com/cockroachdb/cockroach/pkg/rpc/nodedialer"
+	"github.com/cockroachdb/cockroach/pkg/security"
 	"github.com/cockroachdb/cockroach/pkg/security/clientsecopts"
 	"github.com/cockroachdb/cockroach/pkg/security/username"
 	"github.com/cockroachdb/cockroach/pkg/server/debug"
@@ -879,6 +880,9 @@ func NewServer(cfg Config, stopper *stop.Stopper) (*Server, error) {
 	// Instantiate the cache of closed SQL sessions.
 	closedSessionCache := sql.NewClosedSessionCache(cfg.Settings, sqlMonitorAndMetrics.rootSQLMemoryMonitor, time.Now)
 
+	// Instantiate the cache of client cert expirations.
+	clientCertExpirationCache := security.NewClientCertExpirationCache(cfg.Settings)
+
 	// Instantiate the distSQL remote flow runner.
 	remoteFlowRunnerAcc := sqlMonitorAndMetrics.rootSQLMemoryMonitor.MakeBoundAccount()
 	remoteFlowRunner := flowinfra.NewRemoteFlowRunner(cfg.AmbientCtx, stopper, &remoteFlowRunnerAcc)
@@ -909,6 +913,7 @@ func NewServer(cfg Config, stopper *stop.Stopper) (*Server, error) {
 		stopper,
 		sessionRegistry,
 		closedSessionCache,
+		clientCertExpirationCache,
 		remoteFlowRunner,
 		internalExecutor,
 		serverIterator,

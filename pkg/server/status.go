@@ -144,16 +144,17 @@ type baseStatusServer struct {
 	serverpb.UnimplementedStatusServer
 
 	log.AmbientContext
-	privilegeChecker   *adminPrivilegeChecker
-	sessionRegistry    *sql.SessionRegistry
-	closedSessionCache *sql.ClosedSessionCache
-	remoteFlowRunner   *flowinfra.RemoteFlowRunner
-	st                 *cluster.Settings
-	sqlServer          *SQLServer
-	rpcCtx             *rpc.Context
-	stopper            *stop.Stopper
-	serverIterator     ServerIterator
-	clock              *hlc.Clock
+	privilegeChecker          *adminPrivilegeChecker
+	sessionRegistry           *sql.SessionRegistry
+	closedSessionCache        *sql.ClosedSessionCache
+	clientCertExpirationCache *security.ClientCertExpirationCache
+	remoteFlowRunner          *flowinfra.RemoteFlowRunner
+	st                        *cluster.Settings
+	sqlServer                 *SQLServer
+	rpcCtx                    *rpc.Context
+	stopper                   *stop.Stopper
+	serverIterator            ServerIterator
+	clock                     *hlc.Clock
 }
 
 func isInternalAppName(app string) bool {
@@ -562,6 +563,7 @@ func newStatusServer(
 	stopper *stop.Stopper,
 	sessionRegistry *sql.SessionRegistry,
 	closedSessionCache *sql.ClosedSessionCache,
+	clientCertExpirationCache *security.ClientCertExpirationCache,
 	remoteFlowRunner *flowinfra.RemoteFlowRunner,
 	internalExecutor *sql.InternalExecutor,
 	serverIterator ServerIterator,
@@ -574,16 +576,17 @@ func newStatusServer(
 
 	server := &statusServer{
 		baseStatusServer: &baseStatusServer{
-			AmbientContext:     ambient,
-			privilegeChecker:   adminAuthzCheck,
-			sessionRegistry:    sessionRegistry,
-			closedSessionCache: closedSessionCache,
-			remoteFlowRunner:   remoteFlowRunner,
-			st:                 st,
-			rpcCtx:             rpcCtx,
-			stopper:            stopper,
-			serverIterator:     serverIterator,
-			clock:              clock,
+			AmbientContext:            ambient,
+			privilegeChecker:          adminAuthzCheck,
+			sessionRegistry:           sessionRegistry,
+			closedSessionCache:        closedSessionCache,
+			clientCertExpirationCache: clientCertExpirationCache,
+			remoteFlowRunner:          remoteFlowRunner,
+			st:                        st,
+			rpcCtx:                    rpcCtx,
+			stopper:                   stopper,
+			serverIterator:            serverIterator,
+			clock:                     clock,
 		},
 		cfg:              cfg,
 		db:               db,
@@ -613,6 +616,7 @@ func newSystemStatusServer(
 	stopper *stop.Stopper,
 	sessionRegistry *sql.SessionRegistry,
 	closedSessionCache *sql.ClosedSessionCache,
+	clientCertExpirationCache *security.ClientCertExpirationCache,
 	remoteFlowRunner *flowinfra.RemoteFlowRunner,
 	internalExecutor *sql.InternalExecutor,
 	serverIterator ServerIterator,
@@ -633,6 +637,7 @@ func newSystemStatusServer(
 		stopper,
 		sessionRegistry,
 		closedSessionCache,
+		clientCertExpirationCache,
 		remoteFlowRunner,
 		internalExecutor,
 		serverIterator,
