@@ -17,6 +17,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/security"
 	"net"
 	"net/url"
 	"reflect"

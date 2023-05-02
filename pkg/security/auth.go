@@ -15,6 +15,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"github.com/cockroachdb/cockroach/pkg/sql"
 	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
@@ -143,7 +144,7 @@ func Contains(sl []string, s string) bool {
 // UserAuthCertHook builds an authentication hook based on the security
 // mode and client certificate.
 func UserAuthCertHook(
-	insecureMode bool, tlsState *tls.ConnectionState, tenantID roachpb.TenantID,
+	insecureMode bool, tlsState *tls.ConnectionState, execCfg *sql.ExecutorConfig,
 ) (UserAuthHook, error) {
 	var certUserScope []CertificateUserScope
 	if !insecureMode {
@@ -184,7 +185,8 @@ func UserAuthCertHook(
 			return errors.Errorf("using tenant client certificate as user certificate is not allowed")
 		}
 
-		if ValidateUserScope(certUserScope, systemIdentity.Normalized(), tenantID) {
+		if ValidateUserScope(certUserScope, systemIdentity.Normalized(), execCfg.RPCContext.TenantID) {
+			execCfg.RPCContext.SecurityContext
 			return nil
 		}
 		return errors.WithDetailf(errors.Errorf("certificate authentication failed for user %q", systemIdentity),
