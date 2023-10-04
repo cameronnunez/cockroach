@@ -15,6 +15,7 @@ import (
 	"io"
 	"time"
 
+	"github.com/cockroachdb/cockroach/pkg/clusterversion"
 	"github.com/cockroachdb/cockroach/pkg/keys"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvpb"
 	"github.com/cockroachdb/cockroach/pkg/kv/kvserver/allocator/storepool"
@@ -140,8 +141,11 @@ type multiSSTWriter struct {
 	// The approximate size of the SST chunk to buffer in memory on the receiver
 	// before flushing to disk.
 	sstChunkSize int64
-	// The total size of SST data. Updated on SST finalization.
+	// The total size of the key and value pairs (not the total size of the
+	// SSTs). Updated on SST finalization.
 	dataSize int64
+	// The total size of the SSTs.
+	sstSize int64
 	// if skipRangeDelForLastSpan is true, the last span is not ClearRanged in the
 	// same sstable. We rely on the caller to take care of clearing this span
 	// through a different process (eg. IngestAndExcise on pebble).
@@ -197,6 +201,7 @@ func (msstw *multiSSTWriter) finalizeSST(ctx context.Context) error {
 		return errors.Wrap(err, "failed to finish sst")
 	}
 	msstw.dataSize += msstw.currSST.DataSize
+	msstw.sstSize += int64(msstw.currSST.Meta.Size)
 	msstw.currSpan++
 	msstw.currSST.Close()
 	return nil
@@ -499,8 +504,9 @@ func (kvSS *kvBatchSnapshotStrategy) Receive(
 	// TODO(jeffreyxiao): Re-evaluate as the default range size grows.
 	keyRanges := rditer.MakeReplicatedKeySpans(header.State.Desc)
 
-	doExcise := header.SharedReplicate
-	if doExcise && !s.cfg.SharedStorageEnabled {
+	doExcise := header.SharedReplicate || (storage.UseExciseForSnapshots.Get(&s.ClusterSettings().SV) &&
+		s.cfg.Settings.Version.IsActive(ctx, clusterversion.V23_2_PebbleFormatVirtualSSTables))
+	if header.SharedReplicate && !s.cfg.SharedStorageEnabled {
 		return noSnap, sendSnapshotError(ctx, s, stream, errors.New("cannot accept shared sstables"))
 	}
 
@@ -652,6 +658,7 @@ func (kvSS *kvBatchSnapshotStrategy) Receive(
 			// the data.
 			timingTag.start("sst")
 			dataSize, err := msstw.Finish(ctx)
+			sstSize := msstw.sstSize
 			if err != nil {
 				return noSnap, errors.Wrapf(err, "finishing sst for raft snapshot")
 			}
@@ -675,11 +682,13 @@ func (kvSS *kvBatchSnapshotStrategy) Receive(
 				FromReplica:       header.RaftMessageRequest.FromReplica,
 				Desc:              header.State.Desc,
 				DataSize:          dataSize,
+				SSTSize:           sstSize,
 				SharedSize:        sharedSize,
 				raftAppliedIndex:  header.State.RaftAppliedIndex,
 				msgAppRespCh:      make(chan raftpb.Message, 1),
 				sharedSSTs:        sharedSSTs,
 				doExcise:          doExcise,
+				clearedSpans:      keyRanges,
 			}
 
 			timingTag.stop("totalTime")
